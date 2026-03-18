@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Kubernetes secrets
+*kubeconfig*
+*.yaml.bak
+*secret*.yaml
+
+# Local data
+*.pkl
+*.joblib
+*.db
+*.sqlite
+/data/
+/tmp/
+
+# Docker
+*.log
+.env
+.dockerignore
+Dockerfile
+docker-compose.yml
+
+# Airflow
+airflow/airflow.cfg
+airflow/airflow.db
+airflow/logs/
+airflow/webserver_config.py
+
+# MLflow
+mlflow/artifacts/
+mlflow/mlruns/
+mlflow/data/

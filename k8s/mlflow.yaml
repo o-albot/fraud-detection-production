@@ -1,0 +1,114 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: fraud-detection
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      initContainers:
+      - name: install-psycopg2
+        image: python:3.10-slim
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "========================================="
+          echo "📦 Установка psycopg2-binary в общую директорию..."
+          echo "========================================="
+          
+          # Устанавливаем psycopg2-binary
+          pip install --no-cache-dir --target=/packages psycopg2-binary
+          
+          # Проверяем установку
+          echo "✅ Проверка установки:"
+          PYTHONPATH=/packages python -c "import psycopg2; print('✅ psycopg2 успешно импортирован')"
+          
+          echo "========================================="
+          echo "✅ Установка завершена"
+          echo "========================================="
+        volumeMounts:
+        - name: packages
+          mountPath: /packages
+      containers:
+      - name: mlflow
+        image: ghcr.io/mlflow/mlflow:v2.22.0
+        command: ["mlflow", "server"]
+        args:
+          - --host=0.0.0.0
+          - --port=5000
+          - --backend-store-uri=postgresql://mlflow_user:mlflow_pass@postgres:5432/mlflow_db
+          - --default-artifact-root=/mlflow/artifacts
+          - --serve-artifacts
+        ports:
+        - containerPort: 5000
+        env:
+        - name: MLFLOW_TRACKING_URI
+          value: http://localhost:5000
+        - name: PYTHONPATH
+          value: /packages
+        volumeMounts:
+        - name: packages
+          mountPath: /packages
+          readOnly: true
+        - name: mlflow-data
+          mountPath: /mlflow
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 15
+          periodSeconds: 5
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+      volumes:
+      - name: packages
+        emptyDir: {}
+      - name: mlflow-data
+        persistentVolumeClaim:
+          claimName: mlflow-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mlflow-data
+  namespace: fraud-detection
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow
+  namespace: fraud-detection
+spec:
+  selector:
+    app: mlflow
+  ports:
+  - protocol: TCP
+    port: 5000
+    targetPort: 5000
+  type: ClusterIP

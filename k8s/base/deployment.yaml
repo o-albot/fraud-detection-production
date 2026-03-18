@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fraud-detection-api
+  namespace: fraud-detection
+  labels:
+    app: fraud-detection-api
+    version: v1
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: fraud-detection-api
+  template:
+    metadata:
+      labels:
+        app: fraud-detection-api
+        version: v1
+    spec:
+      containers:
+      - name: api
+        image: ghcr.io/o-albot/fraud-detection-api:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+          name: http
+        env:
+        - name: MODEL_PATH
+          value: "/app/model.pkl"
+        - name: LOG_LEVEL
+          value: "INFO"
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3

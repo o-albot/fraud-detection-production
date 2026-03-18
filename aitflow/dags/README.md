@@ -1,16 +1,16 @@
 # Airflow DAGs for Fraud Detection
 
-This directory contains DAGs for:
-- Periodic model retraining
-- Git synchronization
-- Model performance monitoring
+## DAG: fraud_detection_retraining
+Периодическое переобучение модели каждые 6 часов.
 
-## Structure
-- `retrain_model.py` - Main DAG for model retraining
-- `git-sync.py` - DAG for syncing DAGs from Git
-- `monitoring.py` - DAG for monitoring model performance
+### Что делает:
+1. Загружает данные из MinIO (`mlops-bucket/data/train.csv`)
+2. Обучает RandomForest модель
+3. Логирует метрики в MLflow
+4. Сравнивает с champion моделью
+5. Если лучше - регистрирует новую версию
+6. Сохраняет модель в MinIO (`mlops-bucket/models/champion.pkl`)
 
-## Requirements
-- MLflow tracking server: http://mlflow:5000
-- PostgreSQL connection configured
-- Git access token for private repos
+### Требования:
+- Подключение к MinIO: `minio_default`
+- MLflow tracking URI: `http://mlflow:5000`

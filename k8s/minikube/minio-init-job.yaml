@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init
+  namespace: fraud-detection
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers:
+      - name: wait-for-minio
+        image: busybox:1.28
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for MinIO..."
+          until nc -z minio 9000; do
+            sleep 2
+          done
+          echo "MinIO is ready"
+      containers:
+      - name: mc
+        image: minio/mc:latest
+        command:
+        - sh
+        - -c
+        - |
+          # Настройка подключения
+          mc alias set myminio http://minio:9000 minio minio123
+          
+          # Создание бакета
+          mc mb myminio/mlops-bucket --ignore-existing
+          
+          # Создание папок
+          for folder in data dags models models/archive artifacts; do
+            echo "" | mc pipe myminio/mlops-bucket/$folder/.keep
+          done
+          
+          # Загрузка тестового файла
+          echo "Test file created at $(date)" > /tmp/test.txt
+          mc cp /tmp/test.txt myminio/mlops-bucket/data/test.txt
+          
+          # Просмотр результата
+          echo "=== Bucket content ==="
+          mc ls myminio/mlops-bucket --recursive

@@ -1,3 +1,48 @@
+"""
+DAG для периодического переобучения модели fraud-detection
+с автоматической установкой зависимостей
+"""
+
+import subprocess
+import sys
+
+# ============================================
+# АВТОМАТИЧЕСКАЯ УСТАНОВКА ЗАВИСИМОСТЕЙ
+# ============================================
+required_packages = ['mlflow', 'scikit-learn', 'pandas', 'numpy', 'boto3']
+
+for package in required_packages:
+    try:
+        if package == 'scikit-learn':
+            import sklearn
+            print(f"✅ Пакет 'scikit-learn' уже установлен (версия {sklearn.__version__})")
+        elif package == 'boto3':
+            import boto3
+            print(f"✅ Пакет 'boto3' уже установлен (версия {boto3.__version__})")
+        else:
+            module = __import__(package)
+            print(f"✅ Пакет '{package}' уже установлен (версия {module.__version__})")
+    except ImportError:
+        print(f"📦 Устанавливаю пакет '{package}'...")
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", package],
+            check=False,
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            print(f"✅ Пакет '{package}' успешно установлен")
+        else:
+            print(f"❌ Ошибка установки пакета '{package}': {result.stderr}")
+            raise Exception(f"Failed to install {package}")
+
+print("="*50)
+print("🚀 Все зависимости установлены, запускаем DAG")
+print("="*50)
+
+# ============================================
+# ИМПОРТЫ ПОСЛЕ УСТАНОВКИ
+# ============================================
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -9,9 +54,16 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 import io
-import os
 import json
+import logging
 
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ============================================
+# ПАРАМЕТРЫ DAG
+# ============================================
 default_args = {
     'owner': 'mlops',
     'depends_on_past': False,
@@ -22,16 +74,21 @@ default_args = {
     'retry_delay': timedelta(minutes=5),
 }
 
+# ============================================
+# ФУНКЦИИ ДЛЯ ЗАДАЧ
+# ============================================
 def load_data_from_minio():
     """Загрузка данных из MinIO"""
-    hook = S3Hook(aws_conn_id='minio_default')
-    
-    # Читаем train.csv из MinIO
-    file_obj = hook.get_key('data/train.csv', bucket_name='mlops-bucket')
-    df = pd.read_csv(io.BytesIO(file_obj.get()['Body'].read()))
-    
-    print(f"📊 Загружено {len(df)} записей из MinIO")
-    return df
+    try:
+        hook = S3Hook(aws_conn_id='minio_default')
+        file_obj = hook.get_key('data/train.csv', bucket_name='mlops-bucket')
+        df = pd.read_csv(io.BytesIO(file_obj.get()['Body'].read()))
+        logger.info(f"📊 Загружено {len(df)} записей из MinIO")
+        logger.info(f"📊 Колонки: {list(df.columns)}")
+        return df
+    except Exception as e:
+        logger.error(f"❌ Ошибка загрузки данных: {e}")
+        raise
 
 def train_model(**context):
     """Обучение модели и логирование в MLflow"""
@@ -50,6 +107,10 @@ def train_model(**context):
     # Разделение на train/test
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     
+    logger.info(f"📊 Размер обучающей выборки: {len(X_train)}")
+    logger.info(f"📊 Размер тестовой выборки: {len(X_test)}")
+    logger.info(f"📊 Доля целевого класса: {y.mean():.2%}")
+    
     # Настройка MLflow
     mlflow.set_tracking_uri('http://mlflow:5000')
     mlflow.set_experiment('fraud_detection_retraining')
@@ -58,7 +119,8 @@ def train_model(**context):
     params = {
         'n_estimators': 100,
         'max_depth': 10,
-        'random_state': 42
+        'random_state': 42,
+        'n_jobs': -1
     }
     
     with mlflow.start_run() as run:
@@ -66,6 +128,7 @@ def train_model(**context):
         mlflow.log_params(params)
         mlflow.log_param("train_size", len(X_train))
         mlflow.log_param("test_size", len(X_test))
+        mlflow.log_param("features", feature_cols)
         
         # Обучение
         model = RandomForestClassifier(**params)
@@ -84,11 +147,15 @@ def train_model(**context):
         }
         mlflow.log_metrics(metrics)
         
+        # Логирование важности признаков
+        for feat, imp in zip(feature_cols, model.feature_importances_):
+            mlflow.log_metric(f"importance_{feat}", imp)
+        
         # Логирование модели
         mlflow.sklearn.log_model(model, "model")
         
-        print(f"✅ Модель обучена. Run ID: {run.info.run_id}")
-        print(f"📊 Метрики: {metrics}")
+        logger.info(f"✅ Модель обучена. Run ID: {run.info.run_id}")
+        logger.info(f"📊 Метрики: {metrics}")
         
         # Сохраняем run_id для следующих задач
         context['task_instance'].xcom_push(key='run_id', value=run.info.run_id)
@@ -111,21 +178,19 @@ def compare_with_champion(**context):
         champion_run_id = champion_model.run_id
         champion_run = client.get_run(champion_run_id)
         champion_f1 = champion_run.data.metrics.get('f1', 0)
-        print(f"🏆 Champion model F1: {champion_f1:.4f}")
-        champion_exists = True
-    except:
+        logger.info(f"🏆 Champion model F1: {champion_f1:.4f}")
+    except Exception as e:
+        logger.info(f"🏆 No champion model found: {e}")
         champion_f1 = 0
-        print("🏆 No champion model found")
-        champion_exists = False
     
-    print(f"🆕 New model F1: {new_f1:.4f}")
+    logger.info(f"🆕 New model F1: {new_f1:.4f}")
     
     if new_f1 > champion_f1:
-        print("✅ New model is better! Promoting to champion")
+        logger.info("✅ New model is better! Promoting to champion")
         context['task_instance'].xcom_push(key='promote', value=True)
         context['task_instance'].xcom_push(key='improvement', value=new_f1 - champion_f1)
     else:
-        print("❌ Champion remains better")
+        logger.info("❌ Champion remains better")
         context['task_instance'].xcom_push(key='promote', value=False)
 
 def promote_to_champion(**context):
@@ -134,7 +199,7 @@ def promote_to_champion(**context):
     promote = context['task_instance'].xcom_pull(task_ids='compare_models', key='promote')
     
     if not promote:
-        print("⏭️ Skipping promotion")
+        logger.info("⏭️ Skipping promotion")
         return
     
     mlflow.set_tracking_uri('http://mlflow:5000')
@@ -150,45 +215,13 @@ def promote_to_champion(**context):
     # Установка алиаса champion
     client.set_registered_model_alias("fraud_detection_model", "champion", registered_model.version)
     
-    print(f"✅ Model version {registered_model.version} promoted to champion")
-    print(f"📈 Improvement: {improvement:.4f}")
+    logger.info(f"✅ Model version {registered_model.version} promoted to champion")
+    if improvement:
+        logger.info(f"📈 Improvement: {improvement:.4f}")
 
-def save_model_to_minio(**context):
-    """Сохранение модели в MinIO для production"""
-    
-    promote = context['task_instance'].xcom_pull(task_ids='compare_models', key='promote')
-    
-    if not promote:
-        print("⏭️ Model not promoted, skipping save")
-        return
-    
-    mlflow.set_tracking_uri('http://mlflow:5000')
-    
-    # Загружаем champion модель
-    model = mlflow.pyfunc.load_model("models:/fraud_detection_model@champion")
-    
-    # Сохраняем в MinIO
-    import joblib
-    import io
-    
-    hook = S3Hook(aws_conn_id='minio_default')
-    
-    # Сохраняем модель в bytes
-    model_bytes = io.BytesIO()
-    joblib.dump(model, model_bytes)
-    model_bytes.seek(0)
-    
-    # Загружаем в MinIO
-    hook.load_file_obj(
-        file_obj=model_bytes,
-        key='models/champion.pkl',
-        bucket_name='mlops-bucket',
-        replace=True
-    )
-    
-    print("✅ Model saved to MinIO: mlops-bucket/models/champion.pkl")
-
-# Создание DAG
+# ============================================
+# СОЗДАНИЕ DAG
+# ============================================
 dag = DAG(
     'fraud_detection_retraining',
     default_args=default_args,
@@ -198,7 +231,9 @@ dag = DAG(
     tags=['mlops', 'fraud-detection'],
 )
 
-# Задачи
+# ============================================
+# ЗАДАЧИ
+# ============================================
 train_task = PythonOperator(
     task_id='train_model',
     python_callable=train_model,
@@ -220,12 +255,7 @@ promote_task = PythonOperator(
     dag=dag,
 )
 
-save_task = PythonOperator(
-    task_id='save_to_minio',
-    python_callable=save_model_to_minio,
-    provide_context=True,
-    dag=dag,
-)
-
-# Порядок выполнения
-train_task >> compare_task >> promote_task >> save_task
+# ============================================
+# ПОРЯДОК ВЫПОЛНЕНИЯ
+# ============================================
+train_task >> compare_task >> promote_task

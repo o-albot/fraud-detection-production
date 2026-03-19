@@ -38,3 +38,5 @@ train_task = PythonOperator(
     python_callable=train_model,
     dag=dag,
 )
+
+## новый даг

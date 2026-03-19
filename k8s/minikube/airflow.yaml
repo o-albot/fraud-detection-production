@@ -28,7 +28,25 @@ spec:
       securityContext:
         runAsUser: 50000
         fsGroup: 50000
+      
       initContainers:
+      # Инициализация Git при старте
+      - name: git-clone
+        image: alpine/git:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "⏳ Cloning DAGs from Git repository..."
+          rm -rf /dags/*
+          git clone https://github.com/o-albot/fraud-detection-production.git /tmp/repo
+          cp -r /tmp/repo/aitflow/dags/* /dags/
+          echo "✅ DAGs cloned successfully"
+          ls -la /dags/
+        volumeMounts:
+        - name: dags
+          mountPath: /dags
+
       - name: init-db
         image: apache/airflow:2.10.4
         command:
@@ -150,6 +168,31 @@ spec:
         volumeMounts:
         - name: dags
           mountPath: /opt/airflow/dags
+
+      # Добавляем отдельный контейнер для периодической синхронизации
+      - name: git-sync
+        image: alpine/git:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "🔄 Starting periodic Git sync every 60 seconds..."
+          # Ждем, пока основной контейнер инициализируется
+          sleep 30
+          while true; do
+            echo "$(date): Syncing with Git repository..."
+            if [ ! -d /tmp/repo ]; then
+              git clone https://github.com/o-albot/fraud-detection-production.git /tmp/repo
+            else
+              cd /tmp/repo && git pull origin main
+            fi
+            cp -r /tmp/repo/aitflow/dags/* /dags/
+            echo "✅ Sync completed. Next sync in 60 seconds..."
+            sleep 60
+          done
+        volumeMounts:
+        - name: dags
+          mountPath: /dags
 
       volumes:
       - name: dags
